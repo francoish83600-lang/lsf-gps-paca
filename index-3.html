@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LSF GPS – Repérage ferroviaire</title><style>
+:root{font-family:system-ui,Arial,sans-serif;color-scheme:dark}body{margin:0;background:#0d1728;color:#f2f6ff}header{background:#142c4a;padding:22px 18px}h1{font-size:1.5rem;margin:0}header p{color:#b9cce1;margin:8px 0 0}main{max-width:700px;margin:auto;padding:16px}.panel{background:#1b304a;border-radius:17px;padding:20px;margin:14px 0}h2{margin:0 0 14px;font-size:1.3rem}button{background:#3ab9d2;border:0;border-radius:11px;padding:14px 17px;color:#071c2c;font-size:1rem;font-weight:700;cursor:pointer;margin:5px 7px 5px 0}button.secondary{background:#385674;color:white}button:disabled{opacity:.5}.muted{color:#b9cce1}.big{font-size:1.7rem;font-weight:750;margin:8px 0}.value{font-weight:700}label{display:block;margin-top:12px}input{width:100%;box-sizing:border-box;padding:12px;background:#0d2036;color:white;border:1px solid #65809c;border-radius:8px;font-size:1rem}.notice{border-left:5px solid #e5ae43;background:#3b332b;padding:13px;margin-top:18px;line-height:1.45}a{color:#70dded}small{line-height:1.5}#candidates{padding-left:20px}li{margin:10px 0}code{overflow-wrap:anywhere}</style></head><body>
+<header><h1>LSF GPS – Ligne SNCF & PK</h1><p>Prototype expérimental • France • GPS Android</p></header><main>
+<section class="panel"><h2>1. Position GPS</h2><div id="gpsStatus" class="muted">GPS non démarré</div><button id="start">📍 Localiser / actualiser</button><button class="secondary" id="stop">Arrêter GPS</button><p>Latitude : <span id="lat" class="value">—</span><br>Longitude : <span id="lon" class="value">—</span><br>Précision GPS annoncée : <span id="accuracy" class="value">—</span></p><a id="map" href="https://www.openstreetmap.org" target="_blank" rel="noopener">Voir sur OpenStreetMap</a></section>
+<section class="panel"><h2>2. Détection automatique de ligne</h2><button id="detect" disabled>Rechercher les voies proches</button><div id="railStatus" class="muted">Commence par obtenir une position GPS.</div><p>Ligne SNCF : <span id="line" class="value">À identifier</span></p><p>Voie : <span class="value">À identifier</span></p><p>PK : <span id="pk" class="value">Non disponible</span></p><ul id="candidates"></ul><div class="notice">⚠️ La recherche repose sur OpenStreetMap / OpenRailwayMap (données contributives). Le numéro de ligne SNCF peut être absent ou ambigu. Aucun PK SNCF n'est déduit de la seule position GPS : il faut un référentiel de PK vérifié. La précision GPS n'est pas une précision du PK. Ne pas utiliser ce prototype pour la sécurité ferroviaire, la protection du personnel ou la validation des soudures.</div></section>
+<section class="panel"><h2>3. Repère PK connu (facultatif)</h2><p class="muted">Si tu connais le PK réel de l'endroit où tu te trouves, tu peux le noter ici. Il ne s'agit pas d'une détection automatique.</p><label>PK vérifié (ex. 243+472)<input id="manualPK" placeholder="243+472" inputmode="text"></label><button id="save">Enregistrer ce repère localement</button><p id="saved" class="muted"></p><button id="export" class="secondary">Exporter mes repères CSV</button></section>
+<p class="muted"><small>Cette page utilise HTTPS pour demander la localisation. La recherche des voies envoie les coordonnées de la zone à un serveur public Overpass OpenStreetMap. Les repères enregistrés restent dans ce navigateur, sauf export manuel. Fonctionnement tributaire de la connexion et de la disponibilité d'Overpass.</small></p>
+</main><script>
+'use strict';const $=id=>document.getElementById(id);let position=null,watchId=null,nearest=[];const endpoints=['https://overpass.nchc.org.tw/api/interpreter','https://overpass.private.coffee/api/interpreter','https://overpass-api.de/api/interpreter'];
+function update(p){position=p.coords;$('lat').textContent=position.latitude.toFixed(6);$('lon').textContent=position.longitude.toFixed(6);$('accuracy').textContent='± '+Math.round(position.accuracy)+' m';$('gpsStatus').textContent='Position GPS reçue';$('detect').disabled=false;$('map').href='https://www.openstreetmap.org/?mlat='+position.latitude+'&mlon='+position.longitude+'#map=17/'+position.latitude+'/'+position.longitude;}
+function start(){if(!navigator.geolocation){$('gpsStatus').textContent='Géolocalisation indisponible';return}if(watchId!==null)navigator.geolocation.clearWatch(watchId);$('gpsStatus').textContent='Recherche de position…';watchId=navigator.geolocation.watchPosition(update,e=>{$('gpsStatus').textContent='Erreur GPS : '+e.message},{enableHighAccuracy:true,maximumAge:0,timeout:20000});}
+$('start').onclick=start;$('stop').onclick=()=>{if(watchId!==null)navigator.geolocation.clearWatch(watchId);watchId=null;$('gpsStatus').textContent='GPS arrêté';};
+function distance(a,b,c,d){const R=6371000,rad=Math.PI/180,x=(d-b)*rad*Math.cos((a+c)/2*rad),y=(c-a)*rad;return R*Math.hypot(x,y)}
+function segmentDistance(lat,lon,a,b){const rad=Math.PI/180,kx=111195*Math.cos(lat*rad),ky=111195;const ax=(a.lon-lon)*kx,ay=(a.lat-lat)*ky,bx=(b.lon-lon)*kx,by=(b.lat-lat)*ky,dx=bx-ax,dy=by-ay,t=Math.max(0,Math.min(1,-(ax*dx+ay*dy)/(dx*dx+dy*dy||1)));return Math.hypot(ax+t*dx,ay+t*dy)}
+function wayDistance(w,nodes,lat,lon){let min=Infinity;for(let i=1;i<w.nodes.length;i++){const a=nodes.get(w.nodes[i-1]),b=nodes.get(w.nodes[i]);if(a&&b)min=Math.min(min,segmentDistance(lat,lon,a,b))}return min}
+async function detect(){
+ if(!position)return;
+ const lat=position.latitude,lon=position.longitude,accuracy=position.accuracy;
+ $('detect').disabled=true;$('candidates').replaceChildren();$('line').textContent='À identifier';$('pk').textContent='Non disponible';
+ const query='[out:json][timeout:15];way["railway"~"^(rail|light_rail)$"](around:350,'+lat+','+lon+');out geom;';
+ let data=null;const errors=[];
+ try{
+  for(let i=0;i<endpoints.length;i++){
+   $('railStatus').textContent='Recherche des voies proches… serveur '+(i+1)+'/'+endpoints.length+' (maximum 12 secondes).';
+   const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),12000);
+   try{
+    const response=await fetch(endpoints[i],{method:'POST',body:'data='+encodeURIComponent(query),headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},signal:controller.signal});
+    if(!response.ok)throw Error('HTTP '+response.status);
+    data=await response.json();if(!Array.isArray(data.elements))throw Error('Réponse cartographique invalide');break;
+   }catch(e){errors.push(e.name==='AbortError'?'délai dépassé':String(e.message||e));}
+   finally{clearTimeout(timer)}
+  }
+  if(!data){$('railStatus').textContent='Impossible de joindre les services cartographiques. Vérifie la connexion Internet puis réessaie. Détails : '+errors.join(' ; ');return;}
+  nearest=data.elements.filter(x=>x.type==='way'&&x.tags&&Array.isArray(x.geometry)&&x.geometry.length>1).map(w=>({w,d:wayDistanceGeometry(w,lat,lon)})).filter(x=>Number.isFinite(x.d)).sort((a,b)=>a.d-b.d).slice(0,8);
+  if(!nearest.length){$('railStatus').textContent='Aucune voie ferroviaire cartographiée à moins de 350 m de la position. Réessaie plus près des voies.';return;}
+  const best=nearest[0],tag=best.w.tags,ref=tag['ref:FR:RFF']||tag['ref:FR:SNCF']||tag['railway:ref']||tag.ref||'';
+  const match=String(ref).match(/(?:^|\D)(\d{6})(?:\D|$)/);
+  $('line').textContent=match?match[1]:'Non renseignée dans OpenStreetMap';
+  $('railStatus').textContent='Voie cartographiée la plus proche : environ '+Math.round(best.d)+' m du GPS (précision GPS annoncée ±'+Math.round(accuracy)+' m). Identification indicative, à vérifier.';
+  for(const item of nearest.slice(0,5)){
+   const tags=item.w.tags,li=document.createElement('li');
+   const r=tags['ref:FR:RFF']||tags['ref:FR:SNCF']||tags['railway:ref']||tags.ref||'référence absente';
+   li.textContent=Math.round(item.d)+' m — '+r+' — '+(tags.name||tags.railway)+' (OSM '+item.w.id+')';$('candidates').appendChild(li);
+  }
+ }catch(e){$('railStatus').textContent='Erreur pendant la recherche : '+String(e.message||e);}
+ finally{$('detect').disabled=false;}
+}
+function wayDistanceGeometry(w,lat,lon){let min=Infinity;for(let i=1;i<w.geometry.length;i++){min=Math.min(min,segmentDistance(lat,lon,w.geometry[i-1],w.geometry[i]));}return min;}
+$('detect').onclick=detect;
+function records(){try{return JSON.parse(localStorage.getItem('lsf_pk_known_v1')||'[]')}catch{return []}}
+$('save').onclick=()=>{if(!position){alert('Démarre le GPS avant de sauvegarder.');return}const pk=$('manualPK').value.trim();if(!/^\d{1,4}\+\d{3}$/.test(pk)){alert('Saisis un PK au format 243+472.');return}const a=records();a.push({date:new Date().toISOString(),latitude:position.latitude,longitude:position.longitude,precision_m:Math.round(position.accuracy),pk_verifie:pk,ligne_osm:$('line').textContent});localStorage.setItem('lsf_pk_known_v1',JSON.stringify(a));$('saved').textContent=a.length+' repère(s) enregistré(s) sur ce téléphone.';};
+$('export').onclick=()=>{const a=records(),columns=['date','latitude','longitude','precision_m','pk_verifie','ligne_osm'];const csv='\ufeff'+columns.join(';')+'\r\n'+a.map(r=>columns.map(k=>'"'+String(r[k]??'').replaceAll('"','""')+'"').join(';')).join('\r\n');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download='reperes_lsf.csv';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};$('saved').textContent=records().length+' repère(s) enregistré(s) sur ce téléphone.';
+</script></body></html>
